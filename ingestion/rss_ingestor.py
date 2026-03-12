@@ -115,6 +115,13 @@ def run_rss_ingestion_agent(interval=600):
 
         time.sleep(interval)
 
+def fetch_articles():
+
+    articles = fetch_all_rss_feeds()
+
+    articles = remove_duplicates(articles)
+
+    return articles
 
 if __name__ == "__main__":
 

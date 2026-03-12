@@ -94,6 +94,14 @@ def run_web_scraper_agent(interval=1800):
         print(f"Sleeping for {interval} seconds...")
 
         time.sleep(interval)
+def fetch_articles():
+
+    articles = scrape_all_sources()
+
+    articles = remove_duplicates(articles)
+
+    return articles
+
 if __name__ == "__main__":
 
     run_web_scraper_agent(interval=1800)

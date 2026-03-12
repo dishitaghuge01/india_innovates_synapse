@@ -139,8 +139,15 @@ def run_ingestion_agent(interval=600):
 
         time.sleep(interval)
 
+def fetch_articles():
 
-# Allow file to run directly
+    articles = fetch_news()
+
+    articles = remove_duplicates(articles)
+
+    return articles
+
+
 if __name__ == "__main__":
 
     run_ingestion_agent(interval=300)
