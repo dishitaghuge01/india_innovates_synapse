@@ -11,10 +11,9 @@ from transformers import pipeline
 
 REL_API = "https://rel.cs.ru.nl/api"
 
-REQUEST_DELAY = 1.2
+REQUEST_DELAY = 1.0
 MAX_RETRIES = 3
 
-# Allowed ontology entity types
 ALLOWED_TYPES = {"PERSON", "ORG", "GPE", "LOC", "EVENT"}
 
 # =====================
@@ -24,11 +23,10 @@ ALLOWED_TYPES = {"PERSON", "ORG", "GPE", "LOC", "EVENT"}
 try:
     nlp = spacy.load("en_core_web_sm")
 except OSError:
-    print("Downloading SpaCy model...")
     os.system("python -m spacy download en_core_web_sm")
     nlp = spacy.load("en_core_web_sm")
 
-# Lightweight fallback NER
+# Fallback NER
 ner_pipeline = pipeline(
     "ner",
     model="dslim/bert-base-NER",
@@ -36,26 +34,26 @@ ner_pipeline = pipeline(
 )
 
 # =====================
-# Entity cache
+# Cache
 # =====================
 
 entity_cache = {}
 
 # =====================
-# Normalization helper
+# Normalize entity
 # =====================
 
-def normalize_entity(surface):
+def normalize_entity(text):
+    text = text.strip()
 
-    normalized = surface.strip()
-
-    if normalized in {"US", "U.S.", "USA", "U.S.A"}:
+    if text in {"US", "U.S.", "USA"}:
         return "United States"
 
-    return normalized
+    return text
+
 
 # =====================
-# REL API call
+# REL API
 # =====================
 
 def rel_entity_link(text):
@@ -63,49 +61,47 @@ def rel_entity_link(text):
     if text in entity_cache:
         return entity_cache[text]
 
-    for attempt in range(MAX_RETRIES):
-
+    for _ in range(MAX_RETRIES):
         try:
             r = requests.post(
                 REL_API,
                 json={"text": text, "spans": []},
-                timeout=20
+                timeout=15
             )
 
             if r.status_code == 503:
-                time.sleep(3)
+                time.sleep(2)
                 continue
 
             r.raise_for_status()
 
             data = r.json()
 
-            entities = []
+            results = []
 
             for item in data:
-
                 surface = normalize_entity(item[2])
                 wiki_entity = item[3]
 
+                uri = ""
                 if wiki_entity:
                     uri = "http://dbpedia.org/resource/" + wiki_entity.replace(" ", "_")
-                else:
-                    uri = ""
 
-                entities.append((surface, uri))
+                results.append({
+                    "text": surface,
+                    "uri": uri
+                })
 
-            entity_cache[text] = entities
-
+            entity_cache[text] = results
             time.sleep(REQUEST_DELAY)
 
-            return entities
+            return results
 
-        except Exception as e:
-
-            print("REL API error:", e)
+        except Exception:
             time.sleep(2)
 
     return []
+
 
 # =====================
 # Paths
@@ -121,7 +117,7 @@ os.makedirs(output_dir, exist_ok=True)
 output_path = os.path.join(output_dir, "ner_linked_articles.json")
 
 # =====================
-# Load articles
+# Load Articles
 # =====================
 
 articles = []
@@ -136,36 +132,41 @@ print(f"Loaded {len(articles)} articles")
 linked_articles = []
 
 # =====================
-# Process articles
+# Processing
 # =====================
 
 for i, article in enumerate(articles):
 
-    title = article.get("title", "")
-    content = article.get("content") or article.get("description") or ""
-
-    url = article.get("url", "")
-    published_at = article.get("published_at", "")
-
-    if not content.strip():
-        print(f"Skipping empty article: {title}")
-        continue
-
     print(f"Processing {i+1}/{len(articles)}")
 
-    # Combine title + content for better entity detection
-    combined_text = f"{title}. {content}"
+    # ✅ Correct fields from ingestion
+    article_id = article.get("article_id")
+    source_url = article.get("source_url")
+    source_name = article.get("source_name")
+    published_at = article.get("published_at")
 
-    clean_text = combined_text.replace("\n", " ").strip()
-    clean_text = clean_text[:2000]
+    title = article.get("source_title", "")
+    content = article.get("raw_text", "")
+
+    if not content.strip():
+        continue
+
+    combined_text = f"{title}. {content}"
+    clean_text = combined_text.replace("\n", " ").strip()[:2000]
 
     doc = nlp(clean_text)
 
     sentences = [s.text for s in doc.sents]
 
-    # Filter spaCy entities
-    entities_spacy = [
-        (ent.text, ent.label_)
+    # =====================
+    # spaCy entities
+    # =====================
+
+    spacy_entities = [
+        {
+            "text": normalize_entity(ent.text),
+            "label": ent.label_
+        }
         for ent in doc.ents
         if ent.label_ in ALLOWED_TYPES
     ]
@@ -174,68 +175,77 @@ for i, article in enumerate(articles):
     # REL linking
     # =====================
 
-    linked_entities = rel_entity_link(clean_text)
+    linked = rel_entity_link(clean_text)
 
-    # Remove duplicates
+    # =====================
+    # Merge entities
+    # =====================
+
+    final_entities = []
     seen = set()
-    filtered_entities = []
 
-    for surface, uri in linked_entities:
-
-        key = surface.lower()
-
+    # Add REL entities first (higher quality)
+    for ent in linked:
+        key = ent["text"].lower()
         if key not in seen:
             seen.add(key)
-            filtered_entities.append((surface, uri))
+            final_entities.append({
+                "text": ent["text"],
+                "label": None,
+                "uri": ent["uri"],
+                "normalized": ent["text"]
+            })
 
-    linked_entities = filtered_entities
+    # Add spaCy entities if missing
+    for ent in spacy_entities:
+        key = ent["text"].lower()
+        if key not in seen:
+            seen.add(key)
+            final_entities.append({
+                "text": ent["text"],
+                "label": ent["label"],
+                "uri": "",
+                "normalized": ent["text"]
+            })
 
     # =====================
-    # Fallback NER
+    # Fallback (if nothing found)
     # =====================
 
-    if not linked_entities:
-
+    if not final_entities:
         try:
-
             results = ner_pipeline(clean_text)
-
-            linked_entities = [
-                (normalize_entity(r["word"]), "")
-                for r in results
-            ]
-
-        except Exception as e:
-
-            print("Fallback NER error:", e)
-
-            linked_entities = [
-                (normalize_entity(ent.text), "")
-                for ent in doc.ents
-                if ent.label_ in ALLOWED_TYPES
-            ]
+            for r in results:
+                text = normalize_entity(r["word"])
+                final_entities.append({
+                    "text": text,
+                    "label": r.get("entity_group"),
+                    "uri": "",
+                    "normalized": text
+                })
+        except:
+            pass
 
     # =====================
-    # Store result
+    # Store
     # =====================
 
     linked_articles.append({
-        "title": title,
+        "article_id": article_id,
+        "source_url": source_url,
+        "source_name": source_name,
+        "published_at": published_at,
         "sentences": sentences,
-        "entities": entities_spacy,
-        "linked_entities": linked_entities,
-        "url": url,
-        "published_at": published_at
+        "entities": final_entities
     })
 
 # =====================
-# Save output
+# Save
 # =====================
 
 with open(output_path, "w", encoding="utf-8") as f:
-
     for article in linked_articles:
         f.write(json.dumps(article) + "\n")
 
 print("\nFinished processing.")
-print(f"Output saved to: {output_path}")
+print(f"Saved to: {output_path}")

@@ -21,53 +21,19 @@ os.environ["CORENLP_HOME"] = str(CORENLP_PATH)
 jar_files = ";".join(str(jar) for jar in CORENLP_PATH.glob("*.jar"))
 
 # =========================
-# Filtering rules
+# Filters
 # =========================
 
-BAD_SUBJECTS = {
-    "we","they","it","this","that","i","he","she"
-}
-
-BAD_TOKENS = [
-    "reuters",
-    "getty",
-    "credit",
-    "chars",
-    "photo",
-    "image"
-]
-
-DATE_PATTERN = re.compile(
-    r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b",
-    re.I
-)
-
-CHAR_PATTERN = re.compile(r"\d+\s*chars")
-
-# =========================
-# NEW: Relation filters
-# =========================
-
-JOURNALISM_VERBS = {
-    "visit","visits","visited",
-    "join","joins","joined",
-    "say","says","said",
-    "tell","tells","told",
-    "report","reports","reported",
-    "talk","talks","talked",
-    "explain","explains","explained",
-    "show","shows","showed"
-}
+BAD_SUBJECTS = {"we","they","it","this","that","i","he","she"}
 
 WEAK_RELATIONS = {
     "is","are","was","were",
     "has","have","had",
-    "from",
-    "to","in","on","at","of","'s"
+    "to","in","on","at","of"
 }
 
 # =========================
-# Triple Cleaning
+# Clean triple
 # =========================
 
 def clean_triple(triple):
@@ -76,70 +42,55 @@ def clean_triple(triple):
     rel = triple["relation"].strip()
     obj = triple["object"].strip()
 
-    subj_lower = subj.lower()
-
-    if subj_lower in BAD_SUBJECTS:
+    if subj.lower() in BAD_SUBJECTS:
         return None
 
-    if any(token in subj_lower for token in BAD_TOKENS):
-        return None
+    rel_root = rel.lower().split()[0]
 
-    subj = DATE_PATTERN.sub("", subj)
-    subj = subj.replace("Reuters", "")
-    subj = subj.strip()
-
-    if CHAR_PATTERN.search(obj):
+    if rel_root in WEAK_RELATIONS:
         return None
 
     if len(obj) < 3:
         return None
 
-    # =========================
-    # NEW: relation filtering
-    # =========================
-
-    rel_root = rel.lower().split()[0]
-
-    # remove possessive relations like "'s"
-    if rel_root == "'s":
-        return None
-
-    # remove extremely short relations
-    if len(rel_root) < 3:
-        return None
-
-    if rel_root in JOURNALISM_VERBS:
-        return None
-
-    if rel_root in WEAK_RELATIONS:
-        return None
-
     return {
         "subject": subj,
-        "relation": rel,
+        "relation": rel_root,
         "object": obj
     }
 
 # =========================
-# Relation extractor
+# Confidence heuristic
+# =========================
+
+def compute_confidence(subj, rel, obj):
+
+    score = 0.5
+
+    if len(subj) > 3:
+        score += 0.1
+    if len(obj) > 3:
+        score += 0.1
+    if len(rel) > 3:
+        score += 0.1
+
+    return min(score, 0.95)
+
+# =========================
+# Extractor
 # =========================
 
 class RelationExtractor:
 
-    def extract_relations(self, text, client):
+    def extract_from_sentence(self, sentence, client):
 
-        relations = []
-
-        if not text.strip():
-            return relations
+        results = []
 
         try:
+            ann = client.annotate(sentence)
 
-            ann = client.annotate(text)
-
-            for sentence in ann.sentence:
-
-                for triple in sentence.openieTriple:
+            for s in ann.sentence:
+                for triple in s.openieTriple:
 
                     raw = {
                         "subject": triple.subject,
@@ -149,15 +100,27 @@ class RelationExtractor:
 
                     cleaned = clean_triple(raw)
 
-                    if cleaned:
-                        relations.append(cleaned)
+                    if not cleaned:
+                        continue
 
-        except Exception as e:
+                    confidence = compute_confidence(
+                        cleaned["subject"],
+                        cleaned["relation"],
+                        cleaned["object"]
+                    )
 
-            print(f"Extraction error for text:\n{text}\n{e}")
+                    results.append({
+                        "subject": cleaned["subject"],
+                        "relation": cleaned["relation"],
+                        "object": cleaned["object"],
+                        "context": sentence,
+                        "confidence": confidence
+                    })
 
-        return relations
+        except Exception:
+            pass
 
+        return results
 
 # =========================
 # Main
@@ -166,7 +129,7 @@ class RelationExtractor:
 if __name__ == "__main__":
 
     if not INPUT_PATH.exists():
-        print("Input file missing:", INPUT_PATH)
+        print("Missing input:", INPUT_PATH)
         exit()
 
     with open(INPUT_PATH, "r", encoding="utf-8") as f:
@@ -182,46 +145,57 @@ if __name__ == "__main__":
         port=9001
     ) as client:
 
-        all_results = []
+        all_triples = []
 
         for article in articles:
 
-            title = article.get("title", "")
+            article_id = article.get("article_id")
+            source_url = article.get("source_url")
+            published_at = article.get("published_at")
+
             sentences = article.get("sentences", [])
-
-            relations = []
-
-            relations += extractor.extract_relations(title, client)
 
             for sent in sentences:
 
-                relations += extractor.extract_relations(sent, client)
+                triples = extractor.extract_from_sentence(sent, client)
 
-            seen = set()
-            clean_relations = []
+                for t in triples:
 
-            for r in relations:
+                    t["article_id"] = article_id
+                    t["source_url"] = source_url
+                    t["published_at"] = published_at
 
-                key = (
-                    r["subject"].lower(),
-                    r["relation"].lower().split()[0],
-                    r["object"].lower()
-                )
+                    all_triples.append(t)
 
-                if key not in seen:
+    # =========================
+    # Deduplication
+    # =========================
 
-                    clean_relations.append(r)
-                    seen.add(key)
+    seen = set()
+    final_triples = []
 
-            all_results.append({
-                "title": title,
-                "url": article.get("url",""),
-                "relations": clean_relations
-            })
+    for t in all_triples:
+
+        key = (
+            t["subject"].lower(),
+            t["relation"],
+            t["object"].lower(),
+            t["article_id"]
+        )
+
+        if key not in seen:
+            seen.add(key)
+            final_triples.append(t)
+
+    # =========================
+    # Save
+    # =========================
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=2)
+        for t in final_triples:
+            f.write(json.dumps(t) + "\n")
 
-    print("Relations extracted →", OUTPUT_PATH)
+    print(f"Extracted {len(final_triples)} triples")
+    print("Saved to:", OUTPUT_PATH)

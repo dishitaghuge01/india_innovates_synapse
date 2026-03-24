@@ -1,10 +1,6 @@
 import json
 from pathlib import Path
 
-# =========================
-# Paths
-# =========================
-
 INPUT_PATH = Path("data/processed/entity_filtered_relations.json")
 OUTPUT_PATH = Path("data/processed/canonical_triples.json")
 
@@ -14,36 +10,62 @@ OUTPUT_PATH = Path("data/processed/canonical_triples.json")
 
 RELATION_MAP = {
 
+    # communication
+    "say": "communicates",
+    "tell": "communicates",
+    "report": "communicates",
+    "announce": "communicates",
+
+    # conflict
+    "attack": "attacks",
+    "strike": "attacks",
+    "bomb": "attacks",
+    "fire": "attacks",
+    "launch": "attacks",
+
+    # control
+    "control": "controls",
+    "seize": "controls",
+    "occupy": "controls",
+
+    # diplomacy
+    "meet": "diplomatic_meeting",
+    "talk": "diplomatic_meeting",
+
+    # economy
+    "sanction": "sanctions",
+    "block": "sanctions",
+
+    # influence
     "urge": "influences",
     "call": "influences",
-    "say": "communicates",
 
-    "target": "attacks",
-    "attack": "attacks",
-    "bomb": "attacks",
-    "strike": "attacks",
+    # legislation
+    "approve": "approves",
+    "confirm": "appoints",
 
-    "ally": "ally_of",
-    "support": "ally_of",
-
-    "block": "sanctions",
-    "sanction": "sanctions",
-
-    "meet": "diplomatic_meeting",
-
+    # military
+    "disarm": "disarms",
 }
 
 # =========================
-# New: weak relations
+# BAD RELATIONS
 # =========================
 
 BAD_RELATIONS = {
-    "war",
-    "hub",
-    "fear",
-    "could",
-    "continued",
-    "wanted"
+    "is","are","was","were","be","been",
+    "have","has","had","do","did",
+
+    "said","told","says","report","reports",
+
+    "once","comes","goes","came","went",
+    "made","make","take","took",
+    "heard","hears",
+
+    "part","large","will","however",
+    "figure","figures","network","jury",
+
+    "company","leader","case","group"
 }
 
 # =========================
@@ -52,80 +74,79 @@ BAD_RELATIONS = {
 
 def normalize_relation(rel):
 
-    rel = rel.lower().split()[0]
+    rel = rel.lower().strip().split()[0]
 
-    for key in RELATION_MAP:
-
-        if rel.startswith(key):
-            return RELATION_MAP[key]
-
-    return rel
-
-
-# =========================
-# Clean triples
-# =========================
-
-def clean_triple(subj, rel, obj):
-
-    rel = normalize_relation(rel)
-
-    # Remove weak relations
     if rel in BAD_RELATIONS:
         return None
 
-    # very short relations are usually bad
-    if len(rel) < 3:
+    for key in RELATION_MAP:
+        if rel.startswith(key):
+            return RELATION_MAP[key]
+
+    if len(rel) < 4:
         return None
 
-    if len(subj) < 2 or len(obj) < 2:
+    return rel
+
+# =========================
+# Clean triple
+# =========================
+
+def clean_triple(r):
+
+    subj = r["subject"].lower().strip()
+    obj = r["object"].lower().strip()
+    rel = normalize_relation(r["relation"])
+
+    if not rel:
         return None
 
     if subj == obj:
         return None
 
-    return (subj, rel, obj)
+    if len(subj) < 3 or len(obj) < 3:
+        return None
+
+    return {
+        "subject": subj,
+        "relation": rel,
+        "object": obj,
+        "context": r.get("context", ""),
+        "article_id": r.get("article_id", ""),
+        "source_url": r.get("source_url", ""),
+        "published_at": r.get("published_at", "")
+    }
 
 # =========================
 # Process
 # =========================
 
-with open(INPUT_PATH, "r", encoding="utf-8") as f:
-    articles = json.load(f)
-
 triples = []
 
-for article in articles:
+with open(INPUT_PATH, "r", encoding="utf-8") as f:
+    for line in f:
+        r = json.loads(line)
 
-    for r in article["relations"]:
-
-        cleaned = clean_triple(
-            r["subject"],
-            r["relation"],
-            r["object"]
-        )
-
+        cleaned = clean_triple(r)
         if cleaned:
             triples.append(cleaned)
 
-# Deduplicate
-triples = list(set(triples))
+# Deduplicate (preserve metadata)
+unique = {}
+for t in triples:
+    key = (t["subject"], t["relation"], t["object"])
+    if key not in unique:
+        unique[key] = t
+
+triples = list(unique.values())
 
 # =========================
 # Save
 # =========================
 
 with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-
-    for s,r,o in triples:
-
-        record = {
-            "subject": s,
-            "relation": r,
-            "object": o
-        }
-
-        f.write(json.dumps(record) + "\n")
+    for t in triples:
+        f.write(json.dumps(t) + "\n")
 
 print("Canonical triples:", len(triples))
 print("Saved →", OUTPUT_PATH)

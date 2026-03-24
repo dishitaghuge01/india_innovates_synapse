@@ -1,14 +1,18 @@
 import json
+import os
 from pathlib import Path
 from neo4j import GraphDatabase
+from dotenv import load_dotenv
 
 # =========================
-# Neo4j connection
+# Load ENV
 # =========================
 
-URI = "neo4j://127.0.0.1:7687"
-USERNAME = "neo4j"
-PASSWORD = "Coffee@1125"   # change this
+load_dotenv()
+
+URI = os.getenv("NEO4J_URI")
+USERNAME = os.getenv("NEO4J_USERNAME")
+PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 # =========================
 # Paths
@@ -26,21 +30,43 @@ driver = GraphDatabase.driver(
 )
 
 # =========================
-# Cypher query
+# Create indexes (important)
 # =========================
 
-def create_triple(tx, subj, rel, obj):
+def create_indexes(tx):
+    tx.run("CREATE INDEX IF NOT EXISTS FOR (n:Entity) ON (n.name)")
+    tx.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:RELATION]-() ON (r.timestamp)")
 
-    query = f"""
-    MERGE (s:Entity {{name:$subj}})
-    MERGE (o:Entity {{name:$obj}})
-    MERGE (s)-[r:{rel.upper()}]->(o)
+# =========================
+# Insert triple
+# =========================
+
+def create_triple(tx, triple):
+
+    query = """
+    MERGE (s:Entity {name: $subj})
+    MERGE (o:Entity {name: $obj})
+
+    CREATE (s)-[r:RELATION {
+        type: $rel,
+        context: $context,
+        article_id: $article_id,
+        timestamp: $timestamp
+    }]->(o)
     """
 
-    tx.run(query, subj=subj, obj=obj)
+    tx.run(
+        query,
+        subj=triple["subject"].lower(),
+        obj=triple["object"].lower(),
+        rel=triple["relation"],
+        context=triple.get("context", ""),
+        article_id=triple.get("article_id", ""),
+        timestamp=triple.get("published_at") or triple.get("timestamp", "")
+    )
 
 # =========================
-# Load triples
+# Load graph
 # =========================
 
 def load_graph():
@@ -51,35 +77,29 @@ def load_graph():
 
     with driver.session() as session:
 
+        # create indexes once
+        session.write_transaction(create_indexes)
+
+        count = 0
+
         with open(INPUT_PATH, "r", encoding="utf-8") as f:
 
-            count = 0
-
             for line in f:
-
                 triple = json.loads(line)
-
-                subj = triple["subject"].lower()
-                rel = triple["relation"].replace(" ", "_")
-                obj = triple["object"].lower()
 
                 session.write_transaction(
                     create_triple,
-                    subj,
-                    rel,
-                    obj
+                    triple
                 )
 
                 count += 1
 
-    print("Loaded triples:", count)
-
+    print("✅ Loaded triples:", count)
 
 # =========================
 # Run
 # =========================
 
 if __name__ == "__main__":
-
     load_graph()
     driver.close()

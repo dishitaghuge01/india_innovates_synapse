@@ -5,27 +5,49 @@ from pathlib import Path
 # Paths
 # =========================
 
-INPUT_PATH = Path("data/processed/canonical_triples.json")
+INPUT_PATH = Path("data/processed/canonicalized_entities.json")
 OUTPUT_PATH = Path("data/processed/validated_triples.json")
 
 # =========================
-# Simple entity type hints
+# Entity knowledge
 # =========================
 
-COUNTRY_WORDS = {
+COUNTRIES = {
     "iran","iraq","israel","russia","china",
     "ukraine","japan","turkey","brazil",
     "mexico","cuba","argentina","australia",
-    "germany","france","india","us","u.s."
+    "germany","france","india",
+    "united states","united kingdom",
+    "lebanon","namibia","angola"
 }
 
-ORG_WORDS = {
-    "hamas","nato","un","white house",
-    "us navy","menasource"
+ORGS = {
+    "nato","un","eu",
+    "department of homeland security",
+    "senate","white house",
+    "hezbollah","hamas","irgc"
 }
 
-FILM_HINTS = {
-    "film","movie"
+# =========================
+# BAD RELATIONS (STRICT FILTER)
+# =========================
+
+BAD_RELATIONS = {
+    "is","was","were","are","be","being",
+    "also","very","more","most",
+    "said","says","told",
+    "near","close",
+    "figure","figures",
+    "missiles","iranian","large",
+    "however","because","after","before"
+}
+
+# =========================
+# Weak relations (optional drop)
+# =========================
+
+WEAK_RELATIONS = {
+    "born","died","heard","comes","goes","turns"
 }
 
 # =========================
@@ -33,85 +55,72 @@ FILM_HINTS = {
 # =========================
 
 def classify_entity(entity):
-
     e = entity.lower()
 
-    if e in COUNTRY_WORDS:
+    if e in COUNTRIES:
         return "country"
 
-    if e in ORG_WORDS:
+    if e in ORGS:
         return "org"
 
-    if any(word in e for word in FILM_HINTS):
-        return "film"
-
-    if len(e.split()) == 2:
+    if 2 <= len(e.split()) <= 3:
         return "person"
 
     return "unknown"
 
-
 # =========================
-# Ontology rules
-# =========================
-
-RULES = {
-
-    "attacks": {
-        "subject": {"country","org"},
-        "object": {"country","location"}
-    },
-
-    "ally_of": {
-        "subject": {"country","org"},
-        "object": {"country","org"}
-    },
-
-    "influences": {
-        "subject": {"person","org","country"},
-        "object": {"country","org"}
-    },
-
-    "director": {
-        "subject": {"person"},
-        "object": {"film","unknown"}
-    },
-
-    "adviser": {
-        "subject": {"person"},
-        "object": {"country","org"}
-    }
-
-}
-
-# =========================
-# Validation
+# Relation filter
 # =========================
 
-def validate_triple(s, r, o):
+def is_valid_relation(r):
 
-    subj_type = classify_entity(s)
-    obj_type = classify_entity(o)
+    r = r.lower()
 
-    if r not in RULES:
-        return True
-
-    rule = RULES[r]
-
-    if subj_type not in rule["subject"]:
+    if r in BAD_RELATIONS:
         return False
 
-    if obj_type not in rule["object"]:
+    if len(r) < 3:
+        return False
+
+    # must be verb-like (simple heuristic)
+    if not r.endswith(("s","ed")) and r not in {
+        "attacks","controls","sanctions",
+        "approves","appoints","disarms",
+        "influences","meets"
+    }:
         return False
 
     return True
 
+# =========================
+# Triple validation
+# =========================
+
+def validate_triple(s, r, o):
+
+    # relation check
+    if not is_valid_relation(r):
+        return False
+
+    # self loop
+    if s == o:
+        return False
+
+    # entity sanity
+    if len(s) < 2 or len(o) < 2:
+        return False
+
+    # weak relation filtering (optional but useful)
+    if r in WEAK_RELATIONS:
+        return False
+
+    return True
 
 # =========================
-# Main processing
+# Process
 # =========================
 
-valid_triples = []
+validated = []
 
 with open(INPUT_PATH, "r", encoding="utf-8") as f:
 
@@ -125,17 +134,24 @@ with open(INPUT_PATH, "r", encoding="utf-8") as f:
 
         if validate_triple(s, r, o):
 
-            valid_triples.append(triple)
+            # keep original metadata
+            validated.append({
+                "subject": s,
+                "relation": r,
+                "object": o,
+                "context": triple.get("context"),
+                "article_id": triple.get("article_id"),
+                "source_url": triple.get("source_url"),
+                "published_at": triple.get("published_at")
+            })
 
 # =========================
 # Save
 # =========================
 
 with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-
-    for t in valid_triples:
-
+    for t in validated:
         f.write(json.dumps(t) + "\n")
 
-print("Validated triples:", len(valid_triples))
+print("Validated triples:", len(validated))
 print("Saved →", OUTPUT_PATH)

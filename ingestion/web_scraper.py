@@ -1,107 +1,98 @@
+import requests
+from bs4 import BeautifulSoup
 from newspaper import Article
-import json
-import os
-from datetime import datetime
-import time
-RAW_DATA_PATH = "data/raw/articles.json"
-SCRAPE_URLS = [
+from urllib.parse import urlparse
 
-    "https://www.brookings.edu/articles/",
-    "https://carnegieendowment.org/publications",
-    "https://www.csis.org/analysis",
-    "https://www.atlanticcouncil.org/blogs/",
-    "https://www.rand.org/pubs.html"
+from utils import logger
 
-]
-def scrape_article(url):
 
+# =========================
+# Headers (VERY IMPORTANT)
+# =========================
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
+
+
+# =========================
+# Helper
+# =========================
+def get_source_name_from_url(url):
+    if not url:
+        return None
+    return urlparse(url).hostname
+
+
+# =========================
+# Method 1: BeautifulSoup
+# =========================
+def scrape_with_bs4(url):
     try:
+        response = requests.get(url, headers=HEADERS, timeout=5)
 
+        if response.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Extract paragraphs
+        paragraphs = soup.find_all("p")
+        text = " ".join([p.get_text() for p in paragraphs])
+
+        title = soup.title.string if soup.title else None
+
+        if not text or len(text) < 200:
+            return None
+
+        return {
+            "raw_text": text,
+            "source_title": title,
+            "author": None,
+            "published_at": None,
+        }
+
+    except Exception as e:
+        logger.debug(f"BS4 scrape failed: {url} | {e}")
+        return None
+
+
+# =========================
+# Method 2: newspaper3k (fallback)
+# =========================
+def scrape_with_newspaper(url):
+    try:
         article = Article(url)
-
         article.download()
         article.parse()
 
-        data = {
-            "title": article.title,
-            "content": article.text,
-            "description": article.meta_description,
-            "source": url,
-            "url": url,
-            "published_at": str(article.publish_date or datetime.utcnow())
+        return {
+            "raw_text": article.text,
+            "source_title": article.title,
+            "author": article.authors[0] if article.authors else None,
+            "published_at": article.publish_date.isoformat() if article.publish_date else None,
         }
 
+    except Exception as e:
+        logger.debug(f"Newspaper scrape failed: {url} | {e}")
+        return None
+
+
+# =========================
+# Main scraper
+# =========================
+def scrape_article(url):
+    # 1️⃣ Try BeautifulSoup first
+    data = scrape_with_bs4(url)
+
+    if data:
         return data
 
-    except Exception as e:
+    # 2️⃣ Fallback to newspaper3k
+    data = scrape_with_newspaper(url)
 
-        print(f"Failed to scrape {url}: {e}")
-        return None
-def scrape_all_sources():
+    if data:
+        return data
 
-    articles = []
-
-    for url in SCRAPE_URLS:
-
-        print(f"Scraping: {url}")
-
-        article = scrape_article(url)
-
-        if article:
-            articles.append(article)
-
-    return articles
-def remove_duplicates(articles):
-
-    seen_urls = set()
-    unique_articles = []
-
-    for article in articles:
-
-        url = article.get("url")
-
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            unique_articles.append(article)
-
-    return unique_articles
-def save_raw_articles(articles):
-
-    os.makedirs("data/raw", exist_ok=True)
-
-    with open(RAW_DATA_PATH, "a", encoding="utf-8") as f:
-
-        for article in articles:
-            f.write(json.dumps(article) + "\n")
-def run_web_scraper_agent(interval=1800):
-
-    print("Starting Web Scraper Agent...")
-
-    while True:
-
-        print("\nScraping intelligence sources...")
-
-        articles = scrape_all_sources()
-
-        articles = remove_duplicates(articles)
-
-        print(f"Collected {len(articles)} articles")
-
-        save_raw_articles(articles)
-
-        print("Articles appended to storage")
-
-        print(f"Sleeping for {interval} seconds...")
-
-        time.sleep(interval)
-def fetch_articles():
-
-    articles = scrape_all_sources()
-
-    articles = remove_duplicates(articles)
-
-    return articles
-
-if __name__ == "__main__":
-
-    run_web_scraper_agent(interval=1800)
+    # ❌ Final failure
+    logger.debug(f"All scraping methods failed: {url}")
+    return None

@@ -10,44 +10,42 @@ ENTITIES_PATH = Path("data/processed/ner_linked_articles.json")
 OUTPUT_PATH = Path("data/processed/entity_filtered_relations.json")
 
 # =========================
-# NEW: NORP filter
+# Filters
 # =========================
 
 NORP_WORDS = {
-    "israeli",
-    "norwegian",
-    "american",
-    "iranians",
-    "russian",
-    "chinese",
-    "british",
-    "french"
+    "israeli","norwegian","american","iranians",
+    "russian","chinese","british","french"
 }
 
+BAD_RELATIONS = {
+    "is","are","was","were",
+    "has","have","had",
+    "will","would","can","could",
+    "large","small","new","old",
+    "part","swathe"
+}
+
+MIN_OBJECT_LENGTH = 4
+
 # =========================
-# Load entity lists
+# Load entity lists (FIXED STRUCTURE)
 # =========================
 
 article_entities = {}
 
 with open(ENTITIES_PATH, "r", encoding="utf-8") as f:
-
     for line in f:
-
         article = json.loads(line)
 
-        title = article["title"]
-
+        article_id = article.get("article_id")
         entities = set()
 
-        for e, label in article["entities"]:
-            entities.add(e.lower())
+        # NEW FORMAT support
+        for e in article.get("entities", []):
+            entities.add(e["normalized"].lower())
 
-        for e, uri in article["linked_entities"]:
-            entities.add(e.lower())
-
-        article_entities[title] = entities
-
+        article_entities[article_id] = entities
 
 # =========================
 # Helper
@@ -68,59 +66,111 @@ def find_entity(text, entity_set):
     return None
 
 
+def is_valid_relation(rel):
+
+    rel_root = rel.lower().split()[0]
+
+    if rel_root in BAD_RELATIONS:
+        return False
+
+    if len(rel_root) < 3:
+        return False
+
+    return True
+
+
+def is_valid_object(obj):
+
+    if len(obj.strip()) < MIN_OBJECT_LENGTH:
+        return False
+
+    # remove useless generic objects
+    bad_words = ["part", "thing", "something"]
+
+    for w in bad_words:
+        if obj.lower() == w:
+            return False
+
+    return True
+
+
 # =========================
 # Filter triples
 # =========================
 
-filtered_articles = []
+filtered_relations = []
 
 with open(RELATIONS_PATH, "r", encoding="utf-8") as f:
+    relations = [json.loads(line) for line in f]
 
-    articles = json.load(f)
+for r in relations:
 
-for article in articles:
+    article_id = r.get("article_id")
+    entity_set = article_entities.get(article_id, set())
 
-    title = article["title"]
+    subj = r["subject"]
+    rel = r["relation"]
+    obj = r["object"]
 
-    entities = article_entities.get(title, set())
+    # =========================
+    # STEP 1: relation filter
+    # =========================
 
-    clean_relations = []
+    if not is_valid_relation(rel):
+        continue
 
-    for r in article["relations"]:
+    # =========================
+    # STEP 2: object filter
+    # =========================
 
-        subj = r["subject"]
-        rel = r["relation"]
-        obj = r["object"]
+    if not is_valid_object(obj):
+        continue
 
-        subj_entity = find_entity(subj, entities)
-        obj_entity = find_entity(obj, entities)
+    # =========================
+    # STEP 3: entity grounding
+    # =========================
 
-        if subj_entity and obj_entity:
+    subj_entity = find_entity(subj, entity_set)
+    obj_entity = find_entity(obj, entity_set)
 
-            clean_relations.append({
-                "subject": subj_entity,
-                "relation": rel,
-                "object": obj_entity
-            })
+    if not subj_entity or not obj_entity:
+        continue
 
-    # remove duplicates
-    seen = set()
-    unique_relations = []
+    # =========================
+    # STEP 4: final triple
+    # =========================
 
-    for r in clean_relations:
-
-        key = (r["subject"], r["relation"], r["object"])
-
-        if key not in seen:
-            unique_relations.append(r)
-            seen.add(key)
-
-    filtered_articles.append({
-        "title": title,
-        "url": article.get("url",""),
-        "relations": unique_relations
+    filtered_relations.append({
+        "subject": subj_entity,
+        "relation": rel.lower().split()[0],
+        "object": obj_entity,
+        "context": r["context"],
+        "confidence": r["confidence"],
+        "article_id": article_id,
+        "source_url": r["source_url"],
+        "published_at": r["published_at"]
     })
 
+
+# =========================
+# Remove duplicates (STRONG)
+# =========================
+
+seen = set()
+unique_relations = []
+
+for r in filtered_relations:
+
+    key = (
+        r["subject"],
+        r["relation"],
+        r["object"],
+        r["article_id"]
+    )
+
+    if key not in seen:
+        unique_relations.append(r)
+        seen.add(key)
 
 # =========================
 # Save
@@ -129,6 +179,8 @@ for article in articles:
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-    json.dump(filtered_articles, f, indent=2)
+    for r in unique_relations:
+        f.write(json.dumps(r) + "\n")
 
-print("Filtered relations saved to:", OUTPUT_PATH)
+print(f"✅ Clean triples saved: {len(unique_relations)}")
+print("Output →", OUTPUT_PATH)
