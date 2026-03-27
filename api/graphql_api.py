@@ -189,6 +189,9 @@ class Query:
 
     @strawberry.field
     def ask(self, question: str, limit: int = 10) -> List[SemanticResult]:
+        G = load_graph()
+        results = process_query(question, G)
+        return [SemanticResult(**r) for r in results[:limit]]
 
     @strawberry.field
     def pipelineStatus(self) -> str:
