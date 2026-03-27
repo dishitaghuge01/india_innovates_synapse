@@ -51,7 +51,7 @@ data/raw/*
 data/processed/*
 data/temp/*
 data/vector_store/*
-data/cache/*
+data/cache/
 
 # Allow folder structure but ignore files
 !data/raw/.gitkeep
