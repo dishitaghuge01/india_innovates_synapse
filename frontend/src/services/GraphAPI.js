@@ -32,6 +32,7 @@ export const GET_ENTITY_DETAILS = gql`
   query GetDetails($name: String!) {
     entity(name: $name) {
       name
+      entity_type
       relations {
         target
         relation

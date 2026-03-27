@@ -47,6 +47,16 @@ const BriefingPanel = ({ selectedEntityName, onClose }) => {
 
                 {data && data.entity && (
                     <div className="space-y-6">
+                        {data.entity.entity_type && (
+                            <div>
+                                <h3 className="text-[11px] text-cyan-500 font-mono uppercase tracking-[0.2em] mb-2 flex items-center gap-2">
+                                    Entity Type
+                                </h3>
+                                <div className="bg-black/60 border border-cyan-900/50 rounded p-3 text-sm font-mono text-cyan-300">
+                                    {data.entity.entity_type.toUpperCase()}
+                                </div>
+                            </div>
+                        )}
                         <div>
                             <h3 className="text-[11px] text-cyan-500 font-mono uppercase tracking-[0.2em] mb-4 flex items-center gap-2 border-b border-cyan-500/20 pb-2">
                                 <LinkIcon className="w-3.5 h-3.5" />

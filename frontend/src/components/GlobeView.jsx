@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import * as Cesium from 'cesium';
 import { geocode } from '../services/geocode';
 
-Cesium.Ion.defaultAccessToken = '';
+Cesium.Ion.defaultAccessToken = null;
 
 const GlobeView = ({ entities, onEntityClick }) => {
     const viewerRef = useRef(null);
