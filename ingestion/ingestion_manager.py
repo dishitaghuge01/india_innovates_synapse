@@ -3,6 +3,7 @@ import importlib
 import json
 import time
 import hashlib
+import argparse
 
 from ingestion.ingestion_utils import validate_article
 from utils import logger
@@ -119,5 +120,31 @@ def run_ingestion_pipeline(interval=600):
         time.sleep(interval)
 
 
+def run_ingestion_once():
+    logger.info("Running single ingestion cycle...")
+    articles = run_ingestion()
+    save_articles(articles)
+    logger.info(f"Single ingestion cycle completed ({len(articles)} articles)")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run ingestion manager")
+    parser.add_argument(
+        "--once", action="store_true", help="Run one ingestion cycle and exit"
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=600,
+        help="Polling interval in seconds for loop mode",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    run_ingestion_pipeline(interval=600)
+    args = parse_args()
+
+    if args.once:
+        run_ingestion_once()
+    else:
+        run_ingestion_pipeline(interval=args.interval)
