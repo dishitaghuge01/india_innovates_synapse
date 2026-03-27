@@ -4,6 +4,7 @@ import networkx as nx
 import strawberry
 from typing import List, Optional
 import subprocess
+from pipeline.state_manager import set_pipeline_status, get_pipeline_status
 import os
 
 from api.semantic_engine import process_query, normalize_text
@@ -78,6 +79,7 @@ class Entity:
 class Mutation:
     @strawberry.mutation
     def run_pipeline(self) -> str:
+        set_pipeline_status("RUNNING")
         subprocess.Popen(["python", "-m", "pipeline.pipeline_runner"])
         return "🚀 Pipeline started in background"
 
@@ -164,6 +166,10 @@ class Query:
 
     @strawberry.field
     def ask(self, question: str, limit: int = 10) -> List[SemanticResult]:
+
+    @strawberry.field
+    def pipelineStatus(self) -> str:
+        return get_pipeline_status()
         G = load_graph()
 
         results = process_query(question, G)
