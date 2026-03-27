@@ -26,10 +26,13 @@ except OSError:
     nlp = spacy.load("en_core_web_sm")
 
 # Fallback NER
+local_model_dir = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "models", "dslim-bert-base-NER")
+os.makedirs(local_model_dir, exist_ok=True)
 ner_pipeline = pipeline(
     "ner",
     model="dslim/bert-base-NER",
-    aggregation_strategy="simple"
+    aggregation_strategy="simple",
+    model_kwargs={"cache_dir": local_model_dir}
 )
 
 # =====================
