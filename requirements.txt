@@ -1,24 +1,25 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
+fastapi>=0.110
+uvicorn[standard]>=0.29
+strawberry-graphql>=0.220
 
-requests==2.32.3
-beautifulsoup4==4.12.3
-newspaper3k==0.2.8
-feedparser==6.0.11
-lxml_html_clean
+networkx>=3.2
 
-neo4j==5.24.0
+sentence-transformers>=2.6
+rapidfuzz>=3.6
 
-sentence-transformers==3.1.1
-faiss-cpu==1.13.2
+torch>=2.0
+numpy>=1.26
 
-openai==1.51.0
+spacy>=3.5
+transformers>=4.40
+stanza>=1.6
 
-pydantic==2.9.2
-python-dotenv==1.0.1
+requests>=2.32
+beautifulsoup4>=4.12
+newspaper3k>=0.2.8
+feedparser>=6.0
 
-llama-index==0.11.17
+neo4j>=5.0
+python-dotenv>=1.0
 
-numpy==1.26.4
-pandas==2.2.3
-spacy
+pydantic>=2.9
