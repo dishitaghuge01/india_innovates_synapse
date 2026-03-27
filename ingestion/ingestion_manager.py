@@ -2,12 +2,16 @@ import os
 import importlib
 import json
 import time
+import hashlib
 
 from ingestion.ingestion_utils import validate_article
 from utils import logger
 
 INGESTION_FOLDER = "ingestion"
 RAW_DATA_PATH = "data/raw/articles.json"
+
+CACHE_DIR = "data/cache"
+PROCESSED_ARTICLES_PATH = os.path.join(CACHE_DIR, "processed_articles.json")
 
 
 def discover_ingestors():
@@ -66,10 +70,37 @@ def run_ingestion():
 
 def save_articles(articles):
     os.makedirs("data/raw", exist_ok=True)
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
+    # Load processed articles
+    processed_articles = {}
+    if os.path.exists(PROCESSED_ARTICLES_PATH):
+        with open(PROCESSED_ARTICLES_PATH, "r", encoding="utf-8") as f:
+            processed_articles = json.load(f)
+
+    new_articles = []
+    for article in articles:
+        # Compute hash
+        if article.get("article_id"):
+            article_hash = hashlib.md5(article["article_id"].encode()).hexdigest()
+        else:
+            content = f"{article.get('source_title', '')} {article.get('raw_text', '')}"
+            article_hash = hashlib.md5(content.encode()).hexdigest()
+
+        if article_hash not in processed_articles:
+            new_articles.append(article)
+            processed_articles[article_hash] = article.get("published_at") or ""
+
+    # Save new articles
     with open(RAW_DATA_PATH, "a", encoding="utf-8") as f:
-        for article in articles:
+        for article in new_articles:
             f.write(json.dumps(article) + "\n")
+
+    # Save updated processed articles
+    with open(PROCESSED_ARTICLES_PATH, "w", encoding="utf-8") as f:
+        json.dump(processed_articles, f, indent=2)
+
+    logger.info(f"Saved {len(new_articles)} new articles")
 
 
 def run_ingestion_pipeline(interval=600):

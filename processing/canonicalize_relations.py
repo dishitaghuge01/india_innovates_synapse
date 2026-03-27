@@ -1,5 +1,8 @@
 import json
 from pathlib import Path
+import hashlib
+
+from utils import logger
 
 INPUT_PATH = Path("data/processed/entity_filtered_relations.json")
 OUTPUT_PATH = Path("data/processed/canonical_triples.json")
@@ -47,6 +50,27 @@ RELATION_MAP = {
     # military
     "disarm": "disarms",
 }
+
+# =========================
+# Paths
+# =========================
+
+INPUT_PATH = Path("data/processed/entity_filtered_relations.json")
+OUTPUT_PATH = Path("data/processed/canonical_triples.json")
+
+CACHE_DIR = Path("data/cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+PROCESSED_TRIPLES_PATH = CACHE_DIR / "processed_canonical_triples.json"
+
+# =========================
+# Load Cache
+# =========================
+
+processed_triples = {}
+if PROCESSED_TRIPLES_PATH.exists():
+    with open(PROCESSED_TRIPLES_PATH, "r", encoding="utf-8") as f:
+        processed_triples = json.load(f)
 
 # =========================
 # BAD RELATIONS
@@ -129,24 +153,30 @@ with open(INPUT_PATH, "r", encoding="utf-8") as f:
 
         cleaned = clean_triple(r)
         if cleaned:
-            triples.append(cleaned)
+            # Triple hash for dedup
+            triple_key = (
+                cleaned["subject"],
+                cleaned["relation"],
+                cleaned["object"],
+                cleaned["article_id"] or ""
+            )
+            triple_hash = hashlib.md5(json.dumps(triple_key, sort_keys=True).encode()).hexdigest()
 
-# Deduplicate (preserve metadata)
-unique = {}
-for t in triples:
-    key = (t["subject"], t["relation"], t["object"])
-    if key not in unique:
-        unique[key] = t
-
-triples = list(unique.values())
+            if triple_hash not in processed_triples:
+                triples.append(cleaned)
+                processed_triples[triple_hash] = ""
 
 # =========================
 # Save
 # =========================
 
-with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+with open(OUTPUT_PATH, "a", encoding="utf-8") as f:
     for t in triples:
         f.write(json.dumps(t) + "\n")
+
+# Save cache
+with open(PROCESSED_TRIPLES_PATH, "w", encoding="utf-8") as f:
+    json.dump(processed_triples, f, indent=2)
 
 print("Canonical triples:", len(triples))
 print("Saved →", OUTPUT_PATH)

@@ -1,71 +1,96 @@
+import json
+from pathlib import Path
 from datetime import datetime, timedelta
+import os
+
 from rapidfuzz import process, fuzz
 from sentence_transformers import SentenceTransformer, util
 
 # =========================
-# Load model
+# Paths
+# =========================
+
+DATA_PATH = Path("data/processed/triple_embeddings.json")
+
+# =========================
+# GLOBAL CACHE (AUTO-RELOAD)
+# =========================
+
+TRIPLES = []
+LAST_LOADED_TIME = 0
+
+# =========================
+# Load model (once)
 # =========================
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
+
 # =========================
-# Relation synonyms
+# LOAD EMBEDDINGS (AUTO RELOAD)
+# =========================
+
+def load_embeddings():
+    global TRIPLES, LAST_LOADED_TIME
+
+    if not DATA_PATH.exists():
+        return
+
+    modified_time = os.path.getmtime(DATA_PATH)
+
+    if modified_time != LAST_LOADED_TIME:
+        print("🔄 Reloading embeddings...")
+
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            TRIPLES = json.load(f)
+
+        LAST_LOADED_TIME = modified_time
+
+
+# =========================
+# NORMALIZE
+# =========================
+
+def normalize_text(text: str) -> str:
+    return text.lower().strip()
+
+
+# =========================
+# RELATION MAP
 # =========================
 
 RELATION_MAP = {
-    "attack": ["attack", "attacks", "attacking", "strike", "bomb", "hit"],
-    "control": ["control", "controls", "govern"],
+    "attack": ["attack", "attacks", "attacking", "strike", "bomb"],
+    "control": ["control", "controls"],
     "influence": ["influence", "affect"],
-    "approve": ["approve", "approves"],
-    "sanction": ["sanction", "impose", "imposed"]
+    "approve": ["approve"],
+    "sanction": ["sanction", "impose"]
 }
 
-# reverse lookup
 RELATION_LOOKUP = {
     word: key
     for key, values in RELATION_MAP.items()
     for word in values
 }
-    # =========================
-    # TEXT NORMALIZATION
-    # =========================
 
-def normalize_text(text: str) -> str:
-    return text.lower().strip()
 
 # =========================
-# INTENT + DIRECTION
+# INTENT
 # =========================
 
-def extract_intent(query: str):
-
-    query = query.lower().split()
-
-    for word in query:
+def extract_intent(query):
+    for word in query.lower().split():
         if word in RELATION_LOOKUP:
             return RELATION_LOOKUP[word]
-
     return None
 
 
-def extract_direction(query: str):
-
-    query = query.lower()
-
-    if "who" in query:
-        return "incoming"  # who did X → incoming edge
-
-    return "any"
-
-
 # =========================
-# ENTITY (fuzzy)
+# ENTITY (FUZZY)
 # =========================
 
-def extract_entity(query: str, graph):
-
+def extract_entity(query, graph):
     nodes = list(graph.nodes)
-    query = query.lower()
 
     match, score, _ = process.extractOne(
         query,
@@ -80,20 +105,27 @@ def extract_entity(query: str, graph):
 
 
 # =========================
+# DIRECTION
+# =========================
+
+def extract_direction(query):
+    if "who" in query.lower():
+        return "incoming"
+    return "any"
+
+
+# =========================
 # TIME
 # =========================
 
-def extract_time(query: str):
+def extract_time(query):
+    q = query.lower()
 
-    query = query.lower()
-
-    if "recent" in query or "currently" in query or "now" in query:
+    if "recent" in q or "now" in q:
         return 24
-
-    if "today" in query:
+    if "today" in q:
         return 12
-
-    if "week" in query:
+    if "week" in q:
         return 24 * 7
 
     return None
@@ -103,56 +135,58 @@ def extract_time(query: str):
 # MAIN ENGINE
 # =========================
 
-def process_query(query: str, graph):
+def process_query(query, graph):
+
+    # 🔥 AUTO-RELOAD embeddings
+    load_embeddings()
 
     intent = extract_intent(query)
     entity = extract_entity(query, graph)
     direction = extract_direction(query)
     time_window = extract_time(query)
 
-    results = []
+    query_embedding = model.encode(query, convert_to_tensor=True)
 
     now = datetime.utcnow()
 
-    for u, v, data in graph.edges(data=True):
+    results = []
 
-        relation = data.get("relation", "")
-        timestamp = data.get("timestamp")
-        context = data.get("context", "")
+    for triple in TRIPLES:
+
+        u = triple["subject"]
+        v = triple["object"]
+        relation = triple["relation"]
+        timestamp = triple.get("published_at")
+        context = triple.get("context", "")
+        embedding = triple["embedding"]
 
         score = 0
 
         # -----------------
-        # 1. RELATION FILTER (STRICT)
+        # RELATION FILTER
         # -----------------
         if intent:
-            valid_words = RELATION_MAP.get(intent, [])
-
-            if not any(word in relation for word in valid_words):
+            if intent not in relation:
                 continue
-
-            score += 2
-
+            score += 3
 
         # -----------------
-        # 2. ENTITY FILTER
+        # ENTITY FILTER
         # -----------------
         if entity:
             if direction == "incoming":
                 if v != entity:
                     continue
                 score += 3
-
-            elif direction == "any":
+            else:
                 if not (u == entity or v == entity):
                     continue
                 score += 1
 
         # -----------------
-        # 3. TIME FILTER
+        # TIME FILTER
         # -----------------
         if time_window and timestamp:
-
             ts = datetime.fromisoformat(timestamp)
             cutoff = now - timedelta(hours=time_window)
 
@@ -162,19 +196,17 @@ def process_query(query: str, graph):
             score += 2
 
         # -----------------
-        # 4. SEMANTIC SCORE
+        # EMBEDDING SCORE
         # -----------------
-        text = f"{u} {relation} {v}. {context}"
-
         emb_score = util.cos_sim(
-            model.encode(query, convert_to_tensor=True),
-            model.encode(text, convert_to_tensor=True)
+            query_embedding,
+            embedding
         ).item()
 
-        if emb_score < 0.5:
+        if emb_score < 0.3:
             continue
 
-        score += emb_score
+        score += emb_score * 2
 
         results.append({
             "source": u,
@@ -185,10 +217,6 @@ def process_query(query: str, graph):
             "score": float(score)
         })
 
-
-    # -----------------
-    # SORT + CLEAN
-    # -----------------
     results.sort(key=lambda x: x["score"], reverse=True)
 
     return results[:10]

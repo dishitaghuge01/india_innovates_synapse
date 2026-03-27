@@ -1,5 +1,8 @@
 import json
 from pathlib import Path
+import hashlib
+
+from utils import logger
 
 # =========================
 # Paths
@@ -8,6 +11,12 @@ from pathlib import Path
 RELATIONS_PATH = Path("data/processed/relation_candidates.json")
 ENTITIES_PATH = Path("data/processed/ner_linked_articles.json")
 OUTPUT_PATH = Path("data/processed/entity_filtered_relations.json")
+
+CACHE_DIR = Path("data/cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+PROCESSED_ARTICLES_PATH = CACHE_DIR / "processed_articles.json"
+PROCESSED_TRIPLES_PATH = CACHE_DIR / "processed_entity_filtered_relations.json"
 
 # =========================
 # Filters
@@ -27,6 +36,20 @@ BAD_RELATIONS = {
 }
 
 MIN_OBJECT_LENGTH = 4
+
+# =========================
+# Load Caches
+# =========================
+
+processed_articles = {}
+if PROCESSED_ARTICLES_PATH.exists():
+    with open(PROCESSED_ARTICLES_PATH, "r", encoding="utf-8") as f:
+        processed_articles = json.load(f)
+
+processed_triples = {}
+if PROCESSED_TRIPLES_PATH.exists():
+    with open(PROCESSED_TRIPLES_PATH, "r", encoding="utf-8") as f:
+        processed_triples = json.load(f)
 
 # =========================
 # Load entity lists (FIXED STRUCTURE)
@@ -101,76 +124,70 @@ def is_valid_object(obj):
 filtered_relations = []
 
 with open(RELATIONS_PATH, "r", encoding="utf-8") as f:
-    relations = [json.loads(line) for line in f]
+    for line in f:
+        if not line.strip():
+            continue
+        r = json.loads(line)
 
-for r in relations:
+        article_id = r.get("article_id")
+        entity_set = article_entities.get(article_id, set())
 
-    article_id = r.get("article_id")
-    entity_set = article_entities.get(article_id, set())
+        subj = r["subject"]
+        rel = r["relation"]
+        obj = r["object"]
 
-    subj = r["subject"]
-    rel = r["relation"]
-    obj = r["object"]
+        # =========================
+        # STEP 1: relation filter
+        # =========================
 
-    # =========================
-    # STEP 1: relation filter
-    # =========================
+        if not is_valid_relation(rel):
+            continue
 
-    if not is_valid_relation(rel):
-        continue
+        # =========================
+        # STEP 2: object filter
+        # =========================
 
-    # =========================
-    # STEP 2: object filter
-    # =========================
+        if not is_valid_object(obj):
+            continue
 
-    if not is_valid_object(obj):
-        continue
+        # =========================
+        # STEP 3: entity grounding
+        # =========================
 
-    # =========================
-    # STEP 3: entity grounding
-    # =========================
+        subj_entity = find_entity(subj, entity_set)
+        obj_entity = find_entity(obj, entity_set)
 
-    subj_entity = find_entity(subj, entity_set)
-    obj_entity = find_entity(obj, entity_set)
+        if not subj_entity or not obj_entity:
+            continue
 
-    if not subj_entity or not obj_entity:
-        continue
+        # =========================
+        # STEP 4: final triple
+        # =========================
 
-    # =========================
-    # STEP 4: final triple
-    # =========================
+        triple = {
+            "subject": subj_entity,
+            "relation": rel.lower().split()[0],
+            "object": obj_entity,
+            "context": r["context"],
+            "confidence": r["confidence"],
+            "article_id": article_id,
+            "source_url": r["source_url"],
+            "published_at": r["published_at"]
+        }
 
-    filtered_relations.append({
-        "subject": subj_entity,
-        "relation": rel.lower().split()[0],
-        "object": obj_entity,
-        "context": r["context"],
-        "confidence": r["confidence"],
-        "article_id": article_id,
-        "source_url": r["source_url"],
-        "published_at": r["published_at"]
-    })
+        # Triple hash for dedup
+        triple_key = (
+            triple["subject"].lower(),
+            triple["relation"],
+            triple["object"].lower(),
+            triple["article_id"] or ""
+        )
+        triple_hash = hashlib.md5(json.dumps(triple_key, sort_keys=True).encode()).hexdigest()
 
+        if triple_hash not in processed_triples:
+            filtered_relations.append(triple)
+            processed_triples[triple_hash] = ""
 
-# =========================
-# Remove duplicates (STRONG)
-# =========================
-
-seen = set()
-unique_relations = []
-
-for r in filtered_relations:
-
-    key = (
-        r["subject"],
-        r["relation"],
-        r["object"],
-        r["article_id"]
-    )
-
-    if key not in seen:
-        unique_relations.append(r)
-        seen.add(key)
 
 # =========================
 # Save
@@ -178,9 +195,15 @@ for r in filtered_relations:
 
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-    for r in unique_relations:
+with open(OUTPUT_PATH, "a", encoding="utf-8") as f:
+    for r in filtered_relations:
         f.write(json.dumps(r) + "\n")
 
-print(f"✅ Clean triples saved: {len(unique_relations)}")
-print("Output →", OUTPUT_PATH)
+# Save caches
+with open(PROCESSED_ARTICLES_PATH, "w", encoding="utf-8") as f:
+    json.dump(processed_articles, f, indent=2)
+
+with open(PROCESSED_TRIPLES_PATH, "w", encoding="utf-8") as f:
+    json.dump(processed_triples, f, indent=2)
+
+print(f"Filtered {len(filtered_relations)} new relations")

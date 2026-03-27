@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-URI = os.getenv("NEO4J_URI")
+URI = os.getenv("NEO4J_URI")  # MUST be: bolt://127.0.0.1:7687
 USERNAME = os.getenv("NEO4J_USERNAME")
 PASSWORD = os.getenv("NEO4J_PASSWORD")
 
@@ -19,6 +19,12 @@ PASSWORD = os.getenv("NEO4J_PASSWORD")
 # =========================
 
 INPUT_PATH = Path("data/processed/validated_triples.json")
+
+# =========================
+# Config
+# =========================
+
+BATCH_SIZE = 500  # you can tune: 200–1000 depending on RAM
 
 # =========================
 # Driver
@@ -30,7 +36,7 @@ driver = GraphDatabase.driver(
 )
 
 # =========================
-# Create indexes (important)
+# Create indexes
 # =========================
 
 def create_indexes(tx):
@@ -38,32 +44,26 @@ def create_indexes(tx):
     tx.run("CREATE INDEX IF NOT EXISTS FOR ()-[r:RELATION]-() ON (r.timestamp)")
 
 # =========================
-# Insert triple
+# Batch insert
 # =========================
 
-def create_triple(tx, triple):
+def create_batch(tx, batch):
 
     query = """
-    MERGE (s:Entity {name: $subj})
-    MERGE (o:Entity {name: $obj})
+    UNWIND $triples AS triple
+
+    MERGE (s:Entity {name: toLower(triple.subject)})
+    MERGE (o:Entity {name: toLower(triple.object)})
 
     CREATE (s)-[r:RELATION {
-        type: $rel,
-        context: $context,
-        article_id: $article_id,
-        timestamp: $timestamp
+        type: triple.relation,
+        context: triple.context,
+        article_id: triple.article_id,
+        timestamp: triple.timestamp
     }]->(o)
     """
 
-    tx.run(
-        query,
-        subj=triple["subject"].lower(),
-        obj=triple["object"].lower(),
-        rel=triple["relation"],
-        context=triple.get("context", ""),
-        article_id=triple.get("article_id", ""),
-        timestamp=triple.get("published_at") or triple.get("timestamp", "")
-    )
+    tx.run(query, triples=batch)
 
 # =========================
 # Load graph
@@ -72,34 +72,55 @@ def create_triple(tx, triple):
 def load_graph():
 
     if not INPUT_PATH.exists():
-        print("Triple file not found")
+        print("❌ Triple file not found")
         return
+
+    print("📥 Loading triples...")
+
+    # Read all triples first
+    triples = []
+
+    with open(INPUT_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            triple = json.loads(line)
+
+            triples.append({
+                "subject": triple["subject"],
+                "object": triple["object"],
+                "relation": triple["relation"],
+                "context": triple.get("context", ""),
+                "article_id": triple.get("article_id", ""),
+                "timestamp": triple.get("published_at") or triple.get("timestamp", "")
+            })
+
+    total = len(triples)
+    print(f"📊 Total triples: {total}")
 
     with driver.session() as session:
 
-        # create indexes once
-        session.write_transaction(create_indexes)
+        # Create indexes once
+        print("⚙️ Creating indexes...")
+        session.execute_write(create_indexes)
 
+        # Batch insert
         count = 0
 
-        with open(INPUT_PATH, "r", encoding="utf-8") as f:
+        for i in range(0, total, BATCH_SIZE):
+            batch = triples[i:i+BATCH_SIZE]
 
-            for line in f:
-                triple = json.loads(line)
+            session.execute_write(create_batch, batch)
 
-                session.write_transaction(
-                    create_triple,
-                    triple
-                )
+            count += len(batch)
+            print(f"✅ Inserted: {count}/{total}")
 
-                count += 1
-
-    print("✅ Loaded triples:", count)
+    print(f"\n🚀 DONE: Loaded {total} triples successfully")
 
 # =========================
 # Run
 # =========================
 
 if __name__ == "__main__":
-    load_graph()
-    driver.close()
+    try:
+        load_graph()
+    finally:
+        driver.close()

@@ -3,6 +3,9 @@ from pathlib import Path
 import os
 import json
 import re
+import hashlib
+
+from utils import logger
 
 # =========================
 # Paths
@@ -10,6 +13,12 @@ import re
 
 INPUT_PATH = Path("data/processed/ner_linked_articles.json")
 OUTPUT_PATH = Path("data/processed/relation_candidates.json")
+
+CACHE_DIR = Path("data/cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+PROCESSED_ARTICLES_PATH = CACHE_DIR / "processed_articles.json"
+PROCESSED_TRIPLES_PATH = CACHE_DIR / "processed_relation_candidates.json"
 
 # =========================
 # CoreNLP setup
@@ -126,76 +135,108 @@ class RelationExtractor:
 # Main
 # =========================
 
-if __name__ == "__main__":
+# =========================
+# Load Caches
+# =========================
 
-    if not INPUT_PATH.exists():
-        print("Missing input:", INPUT_PATH)
-        exit()
+processed_articles = {}
+if PROCESSED_ARTICLES_PATH.exists():
+    with open(PROCESSED_ARTICLES_PATH, "r", encoding="utf-8") as f:
+        processed_articles = json.load(f)
 
-    with open(INPUT_PATH, "r", encoding="utf-8") as f:
-        articles = [json.loads(line) for line in f]
+processed_triples = {}
+if PROCESSED_TRIPLES_PATH.exists():
+    with open(PROCESSED_TRIPLES_PATH, "r", encoding="utf-8") as f:
+        processed_triples = json.load(f)
+
+# =========================
+# Load Articles
+# =========================
+
+if not INPUT_PATH.exists():
+    print("Missing input:", INPUT_PATH)
+    exit()
+
+with open(INPUT_PATH, "r", encoding="utf-8") as f:
+    articles = [json.loads(line) for line in f]
 
     extractor = RelationExtractor()
 
-    with CoreNLPClient(
-        annotators=['tokenize','ssplit','pos','lemma','depparse','natlog','openie'],
-        timeout=30000,
-        memory='4G',
-        classpath=jar_files,
-        port=9001
-    ) as client:
+all_triples = []
 
-        all_triples = []
+with CoreNLPClient(
+    annotators=['tokenize','ssplit','pos','lemma','depparse','natlog','openie'],
+    timeout=30000,
+    memory='4G',
+    classpath=jar_files,
+    port=9001
+) as client:
 
-        for article in articles:
+    for article in articles:
 
-            article_id = article.get("article_id")
-            source_url = article.get("source_url")
-            published_at = article.get("published_at")
+        article_id = article.get("article_id")
+        source_url = article.get("source_url")
+        published_at = article.get("published_at")
 
-            sentences = article.get("sentences", [])
+        # Compute hash
+        if article_id:
+            article_hash = hashlib.md5(article_id.encode()).hexdigest()
+        else:
+            # Reconstruct content for hash
+            title = article.get("source_title", "")
+            content = article.get("raw_text", "")
+            content_str = f"{title} {content}"
+            article_hash = hashlib.md5(content_str.encode()).hexdigest()
 
-            for sent in sentences:
+        if article_hash in processed_articles:
+            logger.info(f"Skipping duplicate article: {article_hash}")
+            continue
 
-                triples = extractor.extract_from_sentence(sent, client)
+        logger.info(f"Processing new article: {article_id or article_hash}")
 
-                for t in triples:
+        sentences = article.get("sentences", [])
 
-                    t["article_id"] = article_id
-                    t["source_url"] = source_url
-                    t["published_at"] = published_at
+        for sent in sentences:
 
+            triples = extractor.extract_from_sentence(sent, client)
+
+            for t in triples:
+
+                t["article_id"] = article_id
+                t["source_url"] = source_url
+                t["published_at"] = published_at
+
+                # Triple hash for dedup
+                triple_key = (
+                    t["subject"].lower(),
+                    t["relation"],
+                    t["object"].lower(),
+                    t["article_id"] or ""
+                )
+                triple_hash = hashlib.md5(json.dumps(triple_key, sort_keys=True).encode()).hexdigest()
+
+                if triple_hash not in processed_triples:
                     all_triples.append(t)
+                    processed_triples[triple_hash] = ""
 
-    # =========================
-    # Deduplication
-    # =========================
+        # Mark article as processed
+        processed_articles[article_hash] = published_at or ""
 
-    seen = set()
-    final_triples = []
+# =========================
+# Save
+# =========================
 
+OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+with open(OUTPUT_PATH, "a", encoding="utf-8") as f:
     for t in all_triples:
+        f.write(json.dumps(t) + "\n")
 
-        key = (
-            t["subject"].lower(),
-            t["relation"],
-            t["object"].lower(),
-            t["article_id"]
-        )
+# Save caches
+with open(PROCESSED_ARTICLES_PATH, "w", encoding="utf-8") as f:
+    json.dump(processed_articles, f, indent=2)
 
-        if key not in seen:
-            seen.add(key)
-            final_triples.append(t)
+with open(PROCESSED_TRIPLES_PATH, "w", encoding="utf-8") as f:
+    json.dump(processed_triples, f, indent=2)
 
-    # =========================
-    # Save
-    # =========================
-
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-        for t in final_triples:
-            f.write(json.dumps(t) + "\n")
-
-    print(f"Extracted {len(final_triples)} triples")
-    print("Saved to:", OUTPUT_PATH)
+print(f"Extracted {len(all_triples)} new triples")

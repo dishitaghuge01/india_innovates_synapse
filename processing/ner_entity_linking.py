@@ -3,11 +3,10 @@ import os
 import time
 import requests
 import spacy
+import hashlib
 from transformers import pipeline
 
-# =====================
-# Configuration
-# =====================
+from utils import logger
 
 REL_API = "https://rel.cs.ru.nl/api"
 
@@ -116,6 +115,20 @@ os.makedirs(output_dir, exist_ok=True)
 
 output_path = os.path.join(output_dir, "ner_linked_articles.json")
 
+cache_dir = os.path.join(base_dir, "data", "cache")
+os.makedirs(cache_dir, exist_ok=True)
+
+processed_articles_path = os.path.join(cache_dir, "processed_articles.json")
+
+# =====================
+# Load Processed Articles Cache
+# =====================
+
+processed_articles = {}
+if os.path.exists(processed_articles_path):
+    with open(processed_articles_path, "r", encoding="utf-8") as f:
+        processed_articles = json.load(f)
+
 # =====================
 # Load Articles
 # =====================
@@ -137,7 +150,18 @@ linked_articles = []
 
 for i, article in enumerate(articles):
 
-    print(f"Processing {i+1}/{len(articles)}")
+    # Compute article hash for deduplication
+    if article.get("article_id"):
+        article_hash = hashlib.md5(article["article_id"].encode()).hexdigest()
+    else:
+        content = f"{article.get('source_title', '')} {article.get('raw_text', '')}"
+        article_hash = hashlib.md5(content.encode()).hexdigest()
+
+    if article_hash in processed_articles:
+        logger.info(f"Skipping duplicate article: {article_hash}")
+        continue
+
+    logger.info(f"Processing new article: {article.get('article_id') or article_hash}")
 
     # ✅ Correct fields from ingestion
     article_id = article.get("article_id")
@@ -239,13 +263,20 @@ for i, article in enumerate(articles):
         "entities": final_entities
     })
 
+    # Mark as processed
+    processed_articles[article_hash] = published_at or ""
+
 # =====================
 # Save
 # =====================
 
-with open(output_path, "w", encoding="utf-8") as f:
+with open(output_path, "a", encoding="utf-8") as f:
     for article in linked_articles:
         f.write(json.dumps(article) + "\n")
+
+# Save processed articles cache
+with open(processed_articles_path, "w", encoding="utf-8") as f:
+    json.dump(processed_articles, f, indent=2)
 
 print("\nFinished processing.")
 print(f"Saved to: {output_path}")

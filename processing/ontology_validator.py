@@ -1,5 +1,10 @@
 import json
 from pathlib import Path
+import hashlib
+import time
+from datetime import datetime
+
+from utils import logger
 
 # =========================
 # Paths
@@ -7,6 +12,27 @@ from pathlib import Path
 
 INPUT_PATH = Path("data/processed/canonicalized_entities.json")
 OUTPUT_PATH = Path("data/processed/validated_triples.json")
+
+CACHE_DIR = Path("data/cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+PROCESSED_TRIPLES_PATH = CACHE_DIR / "processed_validated_triples.json"
+PIPELINE_STATE_PATH = CACHE_DIR / "pipeline_state.json"
+
+# =========================
+# Load Caches
+# =========================
+
+processed_articles = {}
+PROCESSED_ARTICLES_PATH = CACHE_DIR / "processed_articles.json"
+if PROCESSED_ARTICLES_PATH.exists():
+    with open(PROCESSED_ARTICLES_PATH, "r", encoding="utf-8") as f:
+        processed_articles = json.load(f)
+
+processed_triples = {}
+if PROCESSED_TRIPLES_PATH.exists():
+    with open(PROCESSED_TRIPLES_PATH, "r", encoding="utf-8") as f:
+        processed_triples = json.load(f)
 
 # =========================
 # Entity knowledge
@@ -135,7 +161,7 @@ with open(INPUT_PATH, "r", encoding="utf-8") as f:
         if validate_triple(s, r, o):
 
             # keep original metadata
-            validated.append({
+            validated_triple = {
                 "subject": s,
                 "relation": r,
                 "object": o,
@@ -143,15 +169,42 @@ with open(INPUT_PATH, "r", encoding="utf-8") as f:
                 "article_id": triple.get("article_id"),
                 "source_url": triple.get("source_url"),
                 "published_at": triple.get("published_at")
-            })
+            }
+
+            # Triple hash for dedup
+            triple_key = (
+                validated_triple["subject"].lower(),
+                validated_triple["relation"],
+                validated_triple["object"].lower(),
+                validated_triple["article_id"] or ""
+            )
+            triple_hash = hashlib.md5(json.dumps(triple_key, sort_keys=True).encode()).hexdigest()
+
+            if triple_hash not in processed_triples:
+                validated.append(validated_triple)
+                processed_triples[triple_hash] = ""
 
 # =========================
 # Save
 # =========================
 
-with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+with open(OUTPUT_PATH, "a", encoding="utf-8") as f:
     for t in validated:
         f.write(json.dumps(t) + "\n")
+
+# Save cache
+with open(PROCESSED_TRIPLES_PATH, "w", encoding="utf-8") as f:
+    json.dump(processed_triples, f, indent=2)
+
+# Update pipeline state
+pipeline_state = {
+    "last_processed_article_timestamp": max(processed_articles.values()) if processed_articles else None,
+    "total_articles_processed": len(processed_articles),
+    "last_run_time": datetime.now().isoformat()
+}
+
+with open(PIPELINE_STATE_PATH, "w", encoding="utf-8") as f:
+    json.dump(pipeline_state, f, indent=2)
 
 print("Validated triples:", len(validated))
 print("Saved →", OUTPUT_PATH)
