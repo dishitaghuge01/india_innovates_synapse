@@ -22,6 +22,7 @@ LAST_GRAPH_LOAD_TIME = 0
 # AUTO-RELOAD GRAPH
 # =========================
 
+
 def load_graph():
     global G, LAST_GRAPH_LOAD_TIME
 
@@ -41,6 +42,7 @@ def load_graph():
 # =========================
 # GraphQL Types
 # =========================
+
 
 @strawberry.type
 class Relationship:
@@ -71,18 +73,19 @@ class Entity:
 # Mutation
 # =========================
 
+
 @strawberry.type
 class Mutation:
-
     @strawberry.mutation
     def run_pipeline(self) -> str:
-        subprocess.Popen(["python", "-m", "pipeline_runner"])
+        subprocess.Popen(["python", "-m", "pipeline.pipeline_runner"])
         return "🚀 Pipeline started in background"
 
 
 # =========================
 # Helpers
 # =========================
+
 
 def find_best_entity_match(name: str):
     G = load_graph()
@@ -115,7 +118,7 @@ def get_relationships(entity_name: str):
                     target=v,
                     relation=data.get("relation"),
                     context=data.get("context"),
-                    timestamp=data.get("timestamp")
+                    timestamp=data.get("timestamp"),
                 )
             )
 
@@ -126,31 +129,24 @@ def get_relationships(entity_name: str):
 # Query
 # =========================
 
+
 @strawberry.type
 class Query:
-
     @strawberry.field
     def entity(self, name: str) -> Entity:
         matched = find_best_entity_match(name)
 
-        return Entity(
-            name=matched,
-            relations=get_relationships(matched)
-        )
+        return Entity(name=matched, relations=get_relationships(matched))
 
     @strawberry.field
     def search(
-        self,
-        relation: Optional[str] = None,
-        limit: int = 50
+        self, relation: Optional[str] = None, limit: int = 50
     ) -> List[Relationship]:
-
         G = load_graph()
 
         results = []
 
         for u, v, data in G.edges(data=True):
-
             if relation and data.get("relation") != relation:
                 continue
 
@@ -160,27 +156,19 @@ class Query:
                     target=v,
                     relation=data.get("relation"),
                     context=data.get("context"),
-                    timestamp=data.get("timestamp")
+                    timestamp=data.get("timestamp"),
                 )
             )
 
         return results[:limit]
 
     @strawberry.field
-    def ask(
-        self,
-        question: str,
-        limit: int = 10
-    ) -> List[SemanticResult]:
-
+    def ask(self, question: str, limit: int = 10) -> List[SemanticResult]:
         G = load_graph()
 
         results = process_query(question, G)
 
-        return [
-            SemanticResult(**r)
-            for r in results[:limit]
-        ]
+        return [SemanticResult(**r) for r in results[:limit]]
 
 
 # =========================

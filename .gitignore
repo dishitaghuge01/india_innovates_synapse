@@ -51,12 +51,14 @@ data/raw/*
 data/processed/*
 data/temp/*
 data/vector_store/*
+data/cache/*
 
 # Allow folder structure but ignore files
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/temp/.gitkeep
 !data/vector_store/.gitkeep
+!data/cache/.gitkeep
 
 # ================================
 # Graph databases / embeddings
