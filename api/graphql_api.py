@@ -67,6 +67,9 @@ class SemanticResult:
 @strawberry.type
 class Entity:
     name: str
+    entity_type: Optional[str]
+    latitude: Optional[float]
+    longitude: Optional[float]
     relations: List[Relationship]
 
 
@@ -137,8 +140,28 @@ class Query:
     @strawberry.field
     def entity(self, name: str) -> Entity:
         matched = find_best_entity_match(name)
+        G = load_graph()
+        node_data = G.nodes.get(matched, {})
+        entity_type = node_data.get("type")
+        lat = node_data.get("latitude")
+        lon = node_data.get("longitude")
 
-        return Entity(name=matched, relations=get_relationships(matched))
+        latitude, longitude = None, None
+        try:
+            if lat is not None:
+                latitude = float(lat)
+            if lon is not None:
+                longitude = float(lon)
+        except Exception:
+            latitude, longitude = None, None
+
+        return Entity(
+            name=matched,
+            entity_type=entity_type,
+            latitude=latitude,
+            longitude=longitude,
+            relations=get_relationships(matched)
+        )
 
     @strawberry.field
     def search(
@@ -170,6 +193,55 @@ class Query:
     @strawberry.field
     def pipelineStatus(self) -> str:
         return get_pipeline_status()
+
+    @strawberry.field
+    def getGeospatialEntities(self) -> List[Entity]:
+        G = load_graph()
+        geospatial_entities = []
+        for node, data in G.nodes(data=True):
+            entity_type = data.get("type")
+            name = node
+            lat = data.get("latitude")
+            lon = data.get("longitude")
+            latitude, longitude = None, None
+            try:
+                if lat is not None:
+                    latitude = float(lat)
+                if lon is not None:
+                    longitude = float(lon)
+            except Exception:
+                latitude, longitude = None, None
+            # Only include plausible location types or those having lat/lon/geo-type (fallback to type-match on string)
+            is_location = False
+            if entity_type is not None and entity_type.lower() in {"country", "state", "province", "city", "location", "facility", "region"}:
+                is_location = True
+            # Accept if lat/lon provided
+            if latitude is not None and longitude is not None:
+                is_location = True
+            # Optionally add more logic for other plausible type heuristics
+
+            if is_location:
+                geospatial_entities.append(
+                    Entity(
+                        name=name,
+                        entity_type=entity_type,
+                        latitude=latitude,
+                        longitude=longitude,
+                        relations=[]
+                    )
+                )
+            # Fallback: If not recognized as a geospatial entity but has plausible name/type, ensure at least name/type is included.
+            elif entity_type is not None and entity_type.lower() in {"country", "state", "province", "city", "facility", "region"}:
+                geospatial_entities.append(
+                    Entity(
+                        name=name,
+                        entity_type=entity_type,
+                        latitude=None,
+                        longitude=None,
+                        relations=[]
+                    )
+                )
+        return geospatial_entities
         G = load_graph()
 
         results = process_query(question, G)
