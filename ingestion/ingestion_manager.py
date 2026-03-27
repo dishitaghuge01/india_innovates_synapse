@@ -130,7 +130,7 @@ def run_ingestion_once():
 def parse_args():
     parser = argparse.ArgumentParser(description="Run ingestion manager")
     parser.add_argument(
-        "--once", action="store_true", help="Run one ingestion cycle and exit"
+        "--loop", action="store_true", help="Run continuously with sleep interval"
     )
     parser.add_argument(
         "--interval",
@@ -144,7 +144,7 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    if args.once:
-        run_ingestion_once()
-    else:
+    if args.loop:
         run_ingestion_pipeline(interval=args.interval)
+    else:
+        run_ingestion_once()
