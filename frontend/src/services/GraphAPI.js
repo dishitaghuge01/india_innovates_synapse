@@ -27,3 +27,16 @@ export const GET_ENTITIES = gql`
     }
   }
 `;
+
+export const GET_ENTITY_DETAILS = gql`
+  query GetDetails($name: String!) {
+    entity(name: $name) {
+      name
+      relations {
+        target
+        relation
+        context
+      }
+    }
+  }
+`;

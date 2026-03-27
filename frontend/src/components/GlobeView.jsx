@@ -2,9 +2,17 @@ import React, { useEffect, useRef } from 'react';
 import * as Cesium from 'cesium';
 import { geocode } from '../services/geocode';
 
-const GlobeView = ({ entities }) => {
+Cesium.Ion.defaultAccessToken = '';
+
+const GlobeView = ({ entities, onEntityClick }) => {
     const viewerRef = useRef(null);
     const cesiumViewer = useRef(null);
+    const handlerRef = useRef(null);
+    const onEntityClickRef = useRef(onEntityClick);
+
+    useEffect(() => {
+        onEntityClickRef.current = onEntityClick;
+    }, [onEntityClick]);
 
     useEffect(() => {
         if (!cesiumViewer.current && viewerRef.current) {
@@ -22,6 +30,17 @@ const GlobeView = ({ entities }) => {
                 navigationInstructionsInitiallyVisible: false,
             });
 
+            // Handle entity clicks
+            handlerRef.current = new Cesium.ScreenSpaceEventHandler(cesiumViewer.current.scene.canvas);
+            handlerRef.current.setInputAction((click) => {
+                const pickedObject = cesiumViewer.current.scene.pick(click.position);
+                if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.name) {
+                    if (onEntityClickRef.current) onEntityClickRef.current(pickedObject.id.name);
+                } else {
+                    if (onEntityClickRef.current) onEntityClickRef.current(null);
+                }
+            }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
             // Google Photorealistic 3D Tiles
             const loadTiles = async () => {
                 try {
@@ -38,6 +57,10 @@ const GlobeView = ({ entities }) => {
         }
 
         return () => {
+            if (handlerRef.current) {
+                handlerRef.current.destroy();
+                handlerRef.current = null;
+            }
             if (cesiumViewer.current) {
                 cesiumViewer.current.destroy();
                 cesiumViewer.current = null;
